@@ -206,5 +206,6 @@ func Fatal(format string, values ...any) {
 			write(file, prefixFATAL, format, values...)
 		}
 		write(consoleStderr, prefixFATAL, format, values...)
+		os.Exit(0)
 	}
 }
