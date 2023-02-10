@@ -18,6 +18,8 @@ const (
 	MaskWARNING
 	MaskERROR
 	MaskFATAL
+	MaskStdMask = MaskINFO | MaskWARNING | MaskERROR | MaskFATAL
+	MaskStdAll  = MaskUNKNOWN | MaskDEBUG | MaskTRACE | MaskINFO | MaskWARNING | MaskERROR | MaskFATAL
 )
 
 const (
@@ -39,7 +41,7 @@ var (
 	prefixFATAL   = "[FATAL  ] "
 )
 
-var mask = MaskUNKNOWN | MaskDEBUG | MaskTRACE | MaskINFO | MaskWARNING | MaskERROR | MaskFATAL
+var mask = MaskStdAll
 var flag = FlagStdFlag
 
 var consoleStdout *File
@@ -83,6 +85,9 @@ func SetLogFile(path string) error {
 func CloseFile() {
 	lock.Lock()
 	defer lock.Unlock()
+	if file == nil {
+		return
+	}
 	err := file.file.Close()
 	if err != nil {
 		write(os.Stderr, prefixERROR, "failed to close log file")
@@ -128,9 +133,9 @@ func write(w io.Writer, prefix string, format string, values ...any) {
 }
 
 func Unknown(format string, values ...any) {
-	lock.Lock()
-	defer lock.Unlock()
 	if (mask & MaskUNKNOWN) != 0 {
+		lock.Lock()
+		defer lock.Unlock()
 		if file != nil {
 			write(file, prefixUNKNOWN, format, values...)
 		}
@@ -140,6 +145,8 @@ func Unknown(format string, values ...any) {
 
 func Debug(format string, values ...any) {
 	if (mask & MaskDEBUG) != 0 {
+		lock.Lock()
+		defer lock.Unlock()
 		if file != nil {
 			write(file, prefixDEBUG, format, values...)
 		}
@@ -149,6 +156,8 @@ func Debug(format string, values ...any) {
 
 func Trace(format string, values ...any) {
 	if (mask & MaskTRACE) != 0 {
+		lock.Lock()
+		defer lock.Unlock()
 		if file != nil {
 			write(file, prefixTRACE, format, values...)
 		}
@@ -158,6 +167,8 @@ func Trace(format string, values ...any) {
 
 func Info(format string, values ...any) {
 	if (mask & MaskINFO) != 0 {
+		lock.Lock()
+		defer lock.Unlock()
 		if file != nil {
 			write(file, prefixINFO, format, values...)
 		}
@@ -167,6 +178,8 @@ func Info(format string, values ...any) {
 
 func Warning(format string, values ...any) {
 	if (mask & MaskWARNING) != 0 {
+		lock.Lock()
+		defer lock.Unlock()
 		if file != nil {
 			write(file, prefixWARNING, format, values...)
 		}
@@ -176,6 +189,8 @@ func Warning(format string, values ...any) {
 
 func Error(format string, values ...any) {
 	if (mask & MaskERROR) != 0 {
+		lock.Lock()
+		defer lock.Unlock()
 		if file != nil {
 			write(file, prefixERROR, format, values...)
 		}
@@ -185,6 +200,8 @@ func Error(format string, values ...any) {
 
 func Fatal(format string, values ...any) {
 	if (mask & MaskFATAL) != 0 {
+		lock.Lock()
+		defer lock.Unlock()
 		if file != nil {
 			write(file, prefixFATAL, format, values...)
 		}
