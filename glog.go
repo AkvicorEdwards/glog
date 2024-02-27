@@ -2,11 +2,12 @@ package glog
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
-	"sync"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,8 +19,9 @@ const (
 	MaskWARNING
 	MaskERROR
 	MaskFATAL
-	MaskStdMask = MaskINFO | MaskWARNING | MaskERROR | MaskFATAL
-	MaskStdAll  = MaskUNKNOWN | MaskDEBUG | MaskTRACE | MaskINFO | MaskWARNING | MaskERROR | MaskFATAL
+
+	MaskStd = MaskINFO | MaskWARNING | MaskERROR | MaskFATAL
+	MaskAll = MaskUNKNOWN | MaskDEBUG | MaskTRACE | MaskINFO | MaskWARNING | MaskERROR | MaskFATAL
 )
 
 const (
@@ -27,185 +29,220 @@ const (
 	FlagTime
 	FlagLongFile
 	FlagShortFile
+	FlagFunc
 	FlagPrefix
-	FlagStdFlag = FlagDate | FlagTime
+	FlagSuffix
+
+	FlagStd = FlagDate | FlagTime | FlagPrefix
+	FlagAll = FlagDate | FlagTime | FlagShortFile | FlagFunc | FlagPrefix | FlagSuffix
 )
 
 var (
-	prefixUNKNOWN = "[UNKNOWN] "
-	prefixDEBUG   = "[DEBUG  ] "
-	prefixTRACE   = "[TRACE  ] "
-	prefixINFO    = "[INFO   ] "
-	prefixWARNING = "[WARNING] "
-	prefixERROR   = "[ERROR  ] "
-	prefixFATAL   = "[FATAL  ] "
+	prefixUNKNOWN = "[UNKNOWN]"
+	prefixDEBUG   = "[DEBUG  ]"
+	prefixTRACE   = "[TRACE  ]"
+	prefixINFO    = "[INFO   ]"
+	prefixWARNING = "[WARNING]"
+	prefixERROR   = "[ERROR  ]"
+	prefixFATAL   = "[FATAL  ]"
 )
 
-var mask = MaskStdAll
-var flag = FlagStdFlag
+var separatorStart = " : "
+var separatorEnd = "  [ "
+var separatorEndEnd = " ]"
 
-var consoleStdout *File
-var consoleStderr *File
-var file *File
-var lock sync.RWMutex
+var mask uint32 = MaskStd
+var flag uint32 = FlagStd
 
-func init() {
-	consoleStdout = new(File)
-	consoleStdout.file = os.Stdout
-	consoleStderr = new(File)
-	consoleStderr.file = os.Stderr
-	file = nil
-	lock = sync.RWMutex{}
+var stdout = NewPaperFromFile(os.Stdout)
+var stderr = NewPaperFromFile(os.Stderr)
+var file = NewPaperFromFile(nil)
+
+func SetSeparatorStart(sep string) {
+	separatorStart = sep
 }
 
-func SetMask(m int) {
-	lock.Lock()
-	defer lock.Unlock()
-	mask = m
+func SetSeparatorEnd(sep string) {
+	separatorEnd = sep
 }
 
-func SetFlag(f int) {
-	lock.Lock()
-	defer lock.Unlock()
-	flag = f
+func SetSeparatorEndEnd(end string) {
+	separatorEndEnd = end
+}
+
+func SetMask(m uint32) {
+	atomic.StoreUint32(&mask, m)
+}
+
+func GetMask() uint32 {
+	return atomic.LoadUint32(&mask)
+}
+
+func SetFlag(f uint32) {
+	atomic.StoreUint32(&flag, f)
+}
+
+func GetFlag() uint32 {
+	return atomic.LoadUint32(&flag)
 }
 
 func SetLogFile(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
 	if err != nil {
 		return err
 	}
-	lock.Lock()
-	defer lock.Unlock()
-	file = new(File)
-	file.file = f
+	file.SetFile(f)
 	return nil
 }
 
 func CloseFile() {
-	lock.Lock()
-	defer lock.Unlock()
-	if file == nil {
-		return
-	}
-	err := file.file.Close()
+	err := file.Close()
 	if err != nil {
-		write(os.Stderr, prefixERROR, "failed to close log file")
+		Error("failed to close log file: %v", err)
 	}
-	file = nil
 }
 
-func write(w io.Writer, prefix string, format string, values ...any) {
-	now := ""
-	if (flag&FlagDate) != 0 && (flag&FlagTime) != 0 {
-		now = time.Now().Format("2006-01-02 15:04:05 ")
-	} else if (flag & FlagDate) != 0 {
-		now = time.Now().Format("2006-01-02 ")
-	} else if (flag & FlagTime) != 0 {
-		now = time.Now().Format("15:04:05 ")
+func CloseStdout() {
+	err := stdout.Close()
+	if err != nil {
+		Error("failed to close log stdout: %v", err)
 	}
-	if (flag & FlagPrefix) != 0 {
-		_, _ = w.Write([]byte(now))
-		_, _ = w.Write([]byte(prefix))
+}
+
+func CloseStderr() {
+	err := stderr.Close()
+	if err != nil {
+		Error("failed to close log stderr: %v", err)
+	}
+}
+
+func Close() {
+	CloseFile()
+	CloseStdout()
+	CloseStderr()
+}
+
+func write(w *Paper, prefix string, format string, values ...any) {
+	if !w.Ready() {
+		return
+	}
+	logPrefix := strings.Builder{}
+	logSuffix := strings.Builder{}
+	now := ""
+	flg := GetFlag()
+
+	if (flg&FlagDate) != 0 && (flg&FlagTime) != 0 {
+		now = time.Now().Format("2006-01-02 15:04:05")
+	} else if (flg & FlagDate) != 0 {
+		now = time.Now().Format("2006-01-02")
+	} else if (flg & FlagTime) != 0 {
+		now = time.Now().Format("15:04:05")
+	}
+	if (flg & FlagPrefix) != 0 {
+		logPrefix.WriteString(now)
+		logPrefix.WriteByte(' ')
+		logPrefix.WriteString(prefix)
 	} else {
-		_, _ = w.Write([]byte(prefix))
-		_, _ = w.Write([]byte(now))
+		logPrefix.WriteString(prefix)
+		logPrefix.WriteByte(' ')
+		logPrefix.WriteString(now)
 	}
 
-	if (flag & FlagLongFile) != 0 {
-		_, p, l, ok := runtime.Caller(2)
+	if (flg & FlagFunc) != 0 {
+		c, _, _, ok := runtime.Caller(2)
 		if ok {
-			_, _ = fmt.Fprintf(w, "%s:%d ", p, l)
+			logSuffix.WriteString(runtime.FuncForPC(c).Name())
 		} else {
-			_, _ = w.Write([]byte("?:? "))
-		}
-	} else if (flag & FlagShortFile) != 0 {
-		_, p, l, ok := runtime.Caller(2)
-		if ok {
-			_, _ = fmt.Fprintf(w, "%s:%d ", path.Base(p), l)
-		} else {
-			_, _ = w.Write([]byte("?:? "))
+			logSuffix.WriteByte('?')
 		}
 	}
-	_, _ = w.Write([]byte("| "))
-	_, _ = fmt.Fprintf(w, format, values...)
-	_, _ = w.Write([]byte("\n"))
+
+	if (flg & FlagLongFile) != 0 {
+		if logSuffix.Len() != 0 {
+			logSuffix.WriteByte(' ')
+		}
+		_, p, l, ok := runtime.Caller(2)
+		if ok {
+			logSuffix.WriteString(fmt.Sprintf("%s:%d", p, l))
+		} else {
+			logSuffix.WriteString("?:?")
+		}
+	} else if (flg & FlagShortFile) != 0 {
+		if logSuffix.Len() != 0 {
+			logSuffix.WriteByte(' ')
+		}
+		_, p, l, ok := runtime.Caller(2)
+		if ok {
+			logSuffix.WriteString(fmt.Sprintf("%s:%d", path.Base(p), l))
+		} else {
+			logSuffix.WriteString("?:?")
+		}
+	}
+
+	if (flag & FlagSuffix) != 0 {
+		logPrefix.WriteString(separatorStart)
+		logPrefix.WriteString(fmt.Sprintf(format, values...))
+		logPrefix.WriteString(separatorEnd)
+		logPrefix.WriteString(logSuffix.String())
+		logPrefix.WriteString(separatorEndEnd)
+	} else {
+		logPrefix.WriteByte(' ')
+		logPrefix.WriteString(logSuffix.String())
+		logPrefix.WriteString(separatorStart)
+		logPrefix.WriteString(fmt.Sprintf(format, values...))
+	}
+
+	logPrefix.WriteByte('\n')
+	w.WriteString(logPrefix.String())
 }
 
 func Unknown(format string, values ...any) {
-	if (mask & MaskUNKNOWN) != 0 {
-		lock.Lock()
-		defer lock.Unlock()
-		if file != nil {
-			write(file, prefixUNKNOWN, format, values...)
-		}
-		write(consoleStdout, prefixUNKNOWN, format, values...)
+	if (GetMask() & MaskUNKNOWN) != 0 {
+		write(file, prefixUNKNOWN, format, values...)
+		write(stdout, prefixUNKNOWN, format, values...)
 	}
 }
 
 func Debug(format string, values ...any) {
-	if (mask & MaskDEBUG) != 0 {
-		lock.Lock()
-		defer lock.Unlock()
-		if file != nil {
-			write(file, prefixDEBUG, format, values...)
-		}
-		write(consoleStdout, prefixDEBUG, format, values...)
+	if (GetMask() & MaskDEBUG) != 0 {
+		write(file, prefixDEBUG, format, values...)
+		write(stdout, prefixDEBUG, format, values...)
 	}
 }
 
 func Trace(format string, values ...any) {
-	if (mask & MaskTRACE) != 0 {
-		lock.Lock()
-		defer lock.Unlock()
-		if file != nil {
-			write(file, prefixTRACE, format, values...)
-		}
-		write(consoleStdout, prefixTRACE, format, values...)
+	if (GetMask() & MaskTRACE) != 0 {
+		write(file, prefixTRACE, format, values...)
+		write(stdout, prefixTRACE, format, values...)
 	}
 }
 
 func Info(format string, values ...any) {
-	if (mask & MaskINFO) != 0 {
-		lock.Lock()
-		defer lock.Unlock()
-		if file != nil {
-			write(file, prefixINFO, format, values...)
-		}
-		write(consoleStdout, prefixINFO, format, values...)
+	if (GetMask() & MaskINFO) != 0 {
+		write(file, prefixINFO, format, values...)
+		write(stdout, prefixINFO, format, values...)
 	}
 }
 
 func Warning(format string, values ...any) {
-	if (mask & MaskWARNING) != 0 {
-		lock.Lock()
-		defer lock.Unlock()
-		if file != nil {
-			write(file, prefixWARNING, format, values...)
-		}
-		write(consoleStdout, prefixWARNING, format, values...)
+	if (GetMask() & MaskWARNING) != 0 {
+		write(file, prefixWARNING, format, values...)
+		write(stdout, prefixWARNING, format, values...)
 	}
 }
 
 func Error(format string, values ...any) {
-	if (mask & MaskERROR) != 0 {
-		lock.Lock()
-		defer lock.Unlock()
-		if file != nil {
-			write(file, prefixERROR, format, values...)
-		}
-		write(consoleStderr, prefixERROR, format, values...)
+	if (GetMask() & MaskERROR) != 0 {
+		write(file, prefixERROR, format, values...)
+		write(stderr, prefixERROR, format, values...)
 	}
 }
 
 func Fatal(format string, values ...any) {
-	if (mask & MaskFATAL) != 0 {
-		lock.Lock()
-		defer lock.Unlock()
-		if file != nil {
-			write(file, prefixFATAL, format, values...)
-		}
-		write(consoleStderr, prefixFATAL, format, values...)
+	if (GetMask() & MaskFATAL) != 0 {
+		write(file, prefixFATAL, format, values...)
+		write(stderr, prefixFATAL, format, values...)
+		CloseFile()
 		os.Exit(0)
 	}
 }

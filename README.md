@@ -2,6 +2,10 @@
 
 自用的golang日志库
 
+```go
+import "github.com/AkvicorEdwards/glog"
+```
+
 # 类型
 
 使用`SetMask(m int)`设置每种消息是否输出
